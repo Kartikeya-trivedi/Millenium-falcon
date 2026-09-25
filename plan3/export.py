@@ -9,7 +9,7 @@ import argparse
 import hashlib
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import tempfile
 
 import polars as pl
@@ -34,6 +34,22 @@ def _raw_roster(path: Path, source: str) -> pl.DataFrame:
     return frame
 
 
+def score_shard_path(inference: Path, name: str) -> Path:
+    """Resolve only canonical relative paths inside the score directory."""
+    if not isinstance(name, str) or not name or "\\" in name or ":" in name:
+        raise ValueError("Invalid score shard path")
+    relative = PurePosixPath(name)
+    if (relative.is_absolute() or relative.as_posix() != name or
+            any(part in ("", ".", "..") for part in relative.parts) or
+            not name.endswith(".parquet")):
+        raise ValueError("Invalid score shard path")
+    root = (Path(inference) / "scores").resolve()
+    path = root.joinpath(*relative.parts)
+    if not path.resolve().is_relative_to(root):
+        raise ValueError("Score shard path escapes its directory")
+    return path
+
+
 def inference_manifest(inference: Path):
     """Validate shared provenance without imposing an evaluation/output split."""
     inference = Path(inference)
@@ -50,7 +66,10 @@ def inference_manifest(inference: Path):
     if (decision.get("selected_on") != "select" or not math.isfinite(threshold) or
             not 0 <= threshold <= 1.000001):
         raise ValueError("Invalid frozen decision")
-    roster_path = inference / "roster.parquet"
+    roster_name = complete.get("roster_file", "roster.parquet")
+    if roster_name not in ("roster.parquet", "roster.partition"):
+        raise ValueError("Invalid inference roster path")
+    roster_path = inference / roster_name
     if complete.get("roster_sha256") != sha256(roster_path):
         raise ValueError("Inference roster hash mismatch")
     roster = pl.read_parquet(roster_path)
@@ -63,11 +82,13 @@ def inference_manifest(inference: Path):
     names = complete.get("shards")
     metadata = complete.get("score_shards")
     if (not isinstance(names, list) or not isinstance(metadata, dict) or
-            any(not isinstance(n, str) or Path(n).name != n or "/" in n or "\\" in n or
-                not n.endswith(".parquet") for n in names) or
+            any(not isinstance(n, str) for n in names) or
             len(names) != len(set(names)) or set(names) != set(metadata)):
         raise ValueError("Invalid score shard manifest")
-    if set(p.name for p in (inference / "scores").glob("*.parquet")) != set(names):
+    for name in names:
+        score_shard_path(inference, name)
+    root = inference / "scores"
+    if set(p.relative_to(root).as_posix() for p in root.rglob("*.parquet")) != set(names):
         raise ValueError("Missing or unexpected score shards")
     return spec, complete, roster
 
@@ -117,7 +138,7 @@ def iter_score_shards(inference: Path, complete: dict):
     """Yield authenticated shards, rejecting pairs or owner groups repeated later."""
     seen_owners = set()
     for name in sorted(complete["shards"]):
-        frame = _score_shard(Path(inference) / "scores" / name, complete["score_shards"][name])
+        frame = _score_shard(score_shard_path(inference, name), complete["score_shards"][name])
         owners = set(frame["s1_id"].unique())
         if owners & seen_owners:
             raise ValueError(f"Owner groups appear in multiple score shards: {name}")

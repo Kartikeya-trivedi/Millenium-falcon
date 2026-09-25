@@ -136,7 +136,7 @@ def committed_batch(path: Path, query_ids: pl.Series):
 
 def infer(prepared: Path, views: Path, indexes: Path, model_run: Path, out: Path,
           model_name="support", split="test", query_ids: Path | None = None,
-          threads=4, query_batch=1000, feature_batch=250):
+          threads=4, query_batch=1000, feature_batch=250, *, _partition=None):
     if query_batch < 1 or feature_batch < 1 or threads < 1:
         raise ValueError("Batch sizes and threads must be positive")
     if split not in ("train", "test"):
@@ -145,6 +145,8 @@ def infer(prepared: Path, views: Path, indexes: Path, model_run: Path, out: Path
         raise ValueError("Train inference requires an explicit query list")
     if split == "test" and query_ids is not None:
         raise ValueError("Test inference must cover the complete test roster")
+    if _partition is not None and (split != "test" or query_ids is not None):
+        raise ValueError("Internal partitions apply only to the complete test roster")
     frozen, direct, chosen = load_models(prepared, model_run, model_name)
     view_contract = read_json(views / f"{split}_contract.json")
     if (view_contract["prepared_identity"] != frozen["prepared_identity"] or
@@ -170,6 +172,8 @@ def infer(prepared: Path, views: Path, indexes: Path, model_run: Path, out: Path
     queries = queries.sort("entity_id")
     if not queries.height:
         raise ValueError("Empty inference population")
+    if _partition is not None:
+        queries = partition_queries(queries, _partition)
     spec = {"frozen": frozen, "split": split, "queries": queries.height,
             "raw_inputs": {name: value for name, value in meta["inputs"].items()
                            if name.startswith(split + "/") and "source" in name},
@@ -177,6 +181,8 @@ def infer(prepared: Path, views: Path, indexes: Path, model_run: Path, out: Path
             "query_batch": query_batch, "feature_batch": feature_batch,
             "threads": threads, "inference_code": sha256(Path(__file__)),
             "view_contract_sha256": sha256(views / f"{split}_contract.json")}
+    if _partition is not None:
+        spec["partition"] = _partition
     contract(out / "inference_contract.json", spec)
     if (out / "inference_complete.json").exists():
         _, complete, _ = inference_manifest(out)
@@ -184,7 +190,8 @@ def infer(prepared: Path, views: Path, indexes: Path, model_run: Path, out: Path
             pass
         print(f"Verified completed inference: {out}", flush=True)
         return
-    parquet(out / "roster.parquet", queries.select(s1_id="entity_id", country="country"))
+    roster_name = "roster.partition" if _partition is not None else "roster.parquet"
+    parquet(out / roster_name, queries.select(s1_id="entity_id", country="country"))
     freq = pl.read_parquet(views / f"{split}_name_frequency.parquet")
     expected = []
     for country in sorted(queries["country"].unique().to_list()):
@@ -244,10 +251,24 @@ def infer(prepared: Path, views: Path, indexes: Path, model_run: Path, out: Path
         raise ValueError("Inference has missing or unexpected score shards")
     write_json(out / "inference_complete.json", {"contract_sha256": sha256(out / "inference_contract.json"),
         "shards": expected, "queries": queries.height,
-        "roster_sha256": sha256(out / "roster.parquet"),
+        "roster_file": roster_name, "roster_sha256": sha256(out / roster_name),
         "score_shards": {name: {"sha256": sha256(out / "scores" / name),
             "rows": pl.scan_parquet(out / "scores" / name).select(pl.len()).collect().item()}
             for name in expected}})
+
+
+def partition_queries(queries, partition):
+    """Internal range gate; public test inference still accepts no query filter."""
+    expected = {"start", "stop", "full_queries", "full_query_ids"}
+    if not isinstance(partition, dict) or set(partition) != expected:
+        raise ValueError("Invalid internal test partition")
+    start, stop = partition["start"], partition["stop"]
+    if (type(start) is not int or type(stop) is not int or not 0 <= start < stop <= queries.height or
+            partition["full_queries"] != queries.height or
+            partition["full_query_ids"] != fingerprint(queries["entity_id"].to_list()) or
+            queries["entity_id"].n_unique() != queries.height):
+        raise ValueError("Internal partition does not match the complete test roster")
+    return queries.slice(start, stop-start)
 
 
 def main():
