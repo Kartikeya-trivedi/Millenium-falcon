@@ -8,10 +8,11 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 from .artifacts import contract, load_prepared, read_json, sha256, write_json
 from .finish import select_model, publish_output, worker_lock
+from .inference import load_models
 from .server import run_stage
 
 
-def finish(work, validator, validator_sha, workers=16, threads=4):
+def finish(work, validator, validator_sha, workers=16, threads=4, direct_first=False):
     if sha256(validator) != validator_sha:
         raise ValueError("Validator identity mismatch")
     with worker_lock(work):
@@ -20,12 +21,26 @@ def finish(work, validator, validator_sha, workers=16, threads=4):
         if read_json(work / "test_assets/status.json")["status"] != "complete":
             raise ValueError("Test assets are incomplete")
         run = work / "runs/full-w100-m25"
-        evidence = [run / "direct_report.json", run / "support_report.json",
-                    run / "comparisons/direct-vs-support/report.json",
-                    run / "comparisons/support_control-vs-support/report.json"]
-        choice = select_model(*(read_json(p) for p in evidence))
+        if direct_first:
+            evidence = [run / name for name in
+                        ("direct_report.json", "direct_decision.json", "direct_meta.json", "direct.txt")]
+            missing = [path.name for path in evidence if not path.is_file()]
+            if missing:
+                raise ValueError("Direct-first inputs are incomplete: " + ", ".join(missing))
+            read_json(run / "direct_report.json")
+            frozen, direct, selected = load_models(prepared, run, "direct")
+            del direct, selected
+            choice = {"model": "direct", "mode": "direct-first", "frozen": frozen,
+                      "selection_data": "Completed direct matcher artifacts",
+                      "rule": "Explicit deadline fallback using the completed direct matcher.",
+                      "model_comparison_performed": False}
+        else:
+            evidence = [run / "direct_report.json", run / "support_report.json",
+                        run / "comparisons/direct-vs-support/report.json",
+                        run / "comparisons/support_control-vs-support/report.json"]
+            choice = select_model(*(read_json(p) for p in evidence))
         choice["evidence_sha256"] = {p.relative_to(run).as_posix(): sha256(p) for p in evidence}
-        folder = work / "urgent"
+        folder = work / ("urgent-direct" if direct_first else "urgent")
         contract(folder / "selection.json", choice)
         contract(folder / "finish_contract.json", {"selection_sha256": sha256(folder / "selection.json"),
             "validator_sha256": validator_sha, "code": sha256(Path(__file__)),
@@ -77,5 +92,7 @@ if __name__ == "__main__":
     p.add_argument("--validator-sha", required=True)
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--direct-first", action="store_true",
+                   help="Use the validated completed direct matcher as an explicit deadline fallback")
     a = p.parse_args()
-    finish(a.work_root, a.validator, a.validator_sha, a.workers, a.threads)
+    finish(a.work_root, a.validator, a.validator_sha, a.workers, a.threads, a.direct_first)
