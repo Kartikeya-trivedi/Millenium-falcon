@@ -72,16 +72,30 @@ def status(job_file: Path):
     call = modal.FunctionCall.from_id(job["call_id"])
     try:
         result = call.get(timeout=0)
-        print(json.dumps({"status": "complete", "result": result}, indent=2), flush=True)
+        if job.get("kind") == "finish":
+            child_id = result["finish_call_id"]
+            try:
+                result = modal.FunctionCall.from_id(child_id).get(timeout=0)
+            except TimeoutError:
+                print(json.dumps({"status": "running", "stage": "finish", "call_id": child_id}), flush=True)
+                result = None
+        if result is not None:
+            print(json.dumps({"status": "complete", "result": result}, indent=2), flush=True)
     except TimeoutError:
         print("Cloud job is running.", flush=True)
     volume = modal.Volume.from_name(job["volume"])
-    path = (f"/runs/{job['run_id']}/test_assets/status.json" if job.get("kind") == "test-assets" else
+    path = (f"/runs/{job['run_id']}/finish_queue.json" if job.get("kind") == "finish" else
+            f"/runs/{job['run_id']}/test_assets/status.json" if job.get("kind") == "test-assets" else
             f"/runs/{job['run_id']}/runs/{job['profile']}-w100-m25/server_status.json")
     try:
         print(b"".join(volume.read_file(path)).decode(), flush=True)
     except FileNotFoundError:
         print("Preparing the input dataset; no pipeline stage status yet.", flush=True)
+    if job.get("kind") == "finish":
+        try:
+            print(b"".join(volume.read_file(f"/runs/{job['run_id']}/final/status.json")).decode(), flush=True)
+        except FileNotFoundError:
+            pass
 
 
 def submit_test_assets(parent_job: Path):
@@ -99,14 +113,63 @@ def submit_test_assets(parent_job: Path):
     return job
 
 
+def submit_finish(parent_job: Path, test_assets_job: Path, validator: Path):
+    import modal
+    parent, assets = read_json(parent_job), read_json(test_assets_job)
+    if (parent["run_id"] != assets["run_id"] or parent["dataset_id"] != assets["dataset_id"]
+            or parent["profile"] != "full" or assets.get("kind") != "test-assets"
+            or parent.get("kind") is not None or parent["volume"] != assets["volume"]):
+        raise ValueError("Matching full training and test-assets jobs are required")
+    path = parent_job.with_name(parent_job.stem + "-finish.json")
+    if path.exists():
+        raise ValueError(f"Finish job already recorded: {path}")
+    digest = sha256(validator)
+    remote = f"/utilities/{digest}/validate_submission.py"
+    volume = modal.Volume.from_name(VOLUME)
+    try:
+        existing = b"".join(volume.read_file(remote))
+    except FileNotFoundError:
+        with volume.batch_upload() as batch:
+            batch.put_file(str(validator), remote)
+    else:
+        import hashlib
+        if hashlib.sha256(existing).hexdigest() != digest:
+            raise ValueError("Validator bytes in private volume were modified")
+    app = APP + "-followup"
+    call = modal.Function.from_name(app, "finish_after_training").spawn(
+        parent["run_id"], parent["call_id"], assets["call_id"], digest)
+    job = {**parent, "kind": "finish", "app": app, "call_id": call.object_id,
+           "validator_sha256": digest, "submitted_at": datetime.now(timezone.utc).isoformat()}
+    write_json(path, job)
+    print(json.dumps(job, indent=2), flush=True)
+    return job
+
+
 def download(job_file: Path, out: Path):
     import modal
     job = read_json(job_file)
     out.parent.mkdir(parents=True, exist_ok=True)
     volume = modal.Volume.from_name(job["volume"])
-    with out.open("xb") as f:
-        for block in volume.read_file(f"/runs/{job['run_id']}/results.zip"):
+    if out.exists():
+        raise FileExistsError(out)
+    expected = None
+    if job.get("kind") == "finish":
+        complete = json.loads(b"".join(volume.read_file(f"/runs/{job['run_id']}/final/complete.json")))
+        expected = complete["archive_sha256"]
+    remote = (f"/runs/{job['run_id']}/final/outputs.zip" if job.get("kind") == "finish" else
+              f"/runs/{job['run_id']}/results.zip")
+    from uuid import uuid4
+    temp = out.with_name(out.name + "." + uuid4().hex + ".partial")
+    with temp.open("xb") as f:
+        for block in volume.read_file(remote):
             f.write(block)
+    if expected is not None and sha256(temp) != expected:
+        raise ValueError(f"Output archive hash mismatch; partial download preserved at {temp}")
+    # Windows rename and the caller's unique output filename prevent accidental
+    # replacement. Partial transfers never appear under the completed filename.
+    if out.exists():
+        raise FileExistsError(out)
+    temp.rename(out)
     print(f"Downloaded private results to {out}", flush=True)
 
 
@@ -125,6 +188,10 @@ def main():
     g.add_argument("--job", type=Path, required=True)
     a = sub.add_parser("prepare-test")
     a.add_argument("--job", type=Path, required=True)
+    f = sub.add_parser("finish")
+    f.add_argument("--job", type=Path, required=True)
+    f.add_argument("--test-assets-job", type=Path, required=True)
+    f.add_argument("--validator", type=Path, required=True)
     d = sub.add_parser("download")
     d.add_argument("--job", type=Path, required=True)
     d.add_argument("--out", type=Path, required=True)
@@ -137,6 +204,8 @@ def main():
         status(args.job)
     elif args.command == "prepare-test":
         submit_test_assets(args.job)
+    elif args.command == "finish":
+        submit_finish(args.job, args.test_assets_job, args.validator)
     else:
         download(args.job, args.out)
 

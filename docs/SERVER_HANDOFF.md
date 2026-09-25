@@ -127,6 +127,22 @@ uv run --locked --extra compute python -m plan3.modal_client status --job work/m
 
 This second job uses 8 CPU cores, 32 GiB reserved RAM and a 64 GiB limit. It writes only test assets under the same persistent work root. It does not choose a model or evaluate labels.
 
+Queue the remaining stages while the full training run is active. Supply the exact original validator file; it is hash-checked and uploaded only to the private volume.
+
+```bash
+uv run --locked --extra compute python -m plan3.modal_client finish --job work/modal/full-rich-v1.json --test-assets-job work/modal/full-rich-v1-test-assets.json --validator /path/to/supplied/utils/validate_submission.py
+uv run --locked --extra compute python -m plan3.modal_client status --job work/modal/full-rich-v1-finish.json
+uv run --locked --extra compute python -m plan3.modal_client download --job work/modal/full-rich-v1-finish.json --out work/modal/full-rich-v1-outputs.zip
+```
+
+The coordinator waits for successful training and test preparation, then submits a separate 16-core worker with its own 24-hour timeout. Status follows that worker; completion of the waiting job alone is not completion of the outputs. Failed dependencies stop the queue. Do not redeploy the followup app while it has active work.
+
+The support model is retained only if Select macro F0.5 improves, development paired-owner confidence intervals have positive lower bounds against both direct and the retraining control, and neither development country regresses. Otherwise direct is retained. This rule is fixed before reading fresh Audit. No threshold is retuned using Audit.
+
+The finishing worker scores every eligible held-out training owner, excluding Fit/dictionary owners and, for support, its second-stage training pool. Ownership is resolved across that entire declared world, and accuracy is reported on the reserved 50,000-owner Audit panel. It then scores every test owner, resolves test ownership globally, assembles both TSV files and runs the supplied validator with --check-ids. The private output ZIP contains the files, validation metadata, model-choice evidence and Audit report; its download verifies the recorded archive hash. Failed export attempts stay in separate temporary directories. Compatible inference checkpoints resume; changed committed files are rejected.
+
+The Modal worker serializes finishing jobs. Local CLI workers must not run on different hosts against the same work root. Same-host finishing uses an OS lock that releases on process termination, so an interrupted finishing process does not require deletion of a persistent lock file.
+
 The archive contains exactly the seven supplied TSV files and their hashes. It is extracted into a private project volume, not placed in Git. Do not submit another job with the same run ID while it is running. See the official [Modal volume](https://modal.com/docs/guide/volumes) and [CPU resource](https://modal.com/docs/guide/resources) documentation for the storage and resource semantics.
 
 ## 6. Send back the result bundle
