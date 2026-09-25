@@ -54,6 +54,6 @@ def select_budget(prepared: Path, run: Path, mean_limit=400, p95_limit=500, targ
               "target_recall":target_recall, "mean_limit":mean_limit, "p95_limit":p95_limit,
               "chosen":chosen, "reason":reason, "grid_sha256":sha256(run/"budget_grid.tsv")}
     contract(run / "budget.json", result)
-    print(table, flush=True)
+    print(table.write_csv(separator="\t").rstrip(), flush=True)
     print(reason, chosen, flush=True)
     return result

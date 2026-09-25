@@ -10,5 +10,7 @@ output/
 *.npz
 *.npy
 *.log
+*.zip
+*.tsv
 .env
 .env.*

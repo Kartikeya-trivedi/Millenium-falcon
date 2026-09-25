@@ -229,13 +229,18 @@ Stages C and D can proceed from the already reported evidence while B is impleme
 
 ### Current implementation status
 
-- Imported the upstream v2 source unchanged.
+- Imported the upstream v2 logic; the published copy has non-functional wording edits.
 - Reconstructed all 2,206,821 training owners' split roles and the 1,205-word dictionary.
 - Prepared all train and test source/country partitions with input fingerprints.
 - Reserved 50,000 fresh Audit owners outside the old 20,000-owner panel.
 - Stopped the redundant local v2 reference retrieval at the user's request. Its partial artifacts are not a completed or reproduced baseline and do not gate Plan 3.
-- Implemented optional sharded retrieval infrastructure. Its C/N channels are deferred by this revised plan.
+- Measured full-target W/M retrieval on the 2,000-owner Tune panel. W100/M25 recalls 99.3065% of 6,921 true links at mean 237.6 and p95 250 candidates. No measured setting reaches 99.5% within both declared budgets.
+- Trained the richer 67-column direct model on 10,000 Fit owners. Its exposed 2,000-owner development subset scores 0.951625 macro F0.5; this is not a paired or external gain over v2.
+- Saved the four-class error ledger. Tune has 48 retrieval misses, 572 rejected true candidates and 89 false accepts; no ownership loss was observed in this small panel.
+- Implemented independently scored sibling features with 3,000 c_prob owners for separate second-stage training. That pool is repurposed and must not also be used for probability calibration. The support comparison is pending; full-world competitor probabilities are not yet learned model features.
+- Added a server runner, stage logs, result packaging and explicit full-profile commands in SERVER_HANDOFF.md. Larger training and fresh-Audit evaluation remain separate steps.
+- Deferred C/N retrieval channels, full-world ownership validation, missing-owner stress training and one-hop expansion until their individual evidence warrants promotion.
 
-The completed teammate baseline is accepted without local reproduction. The new candidate target and any Plan 3 final-score improvement remain unmeasured.
+The completed teammate baseline is accepted without local reproduction. The first candidate budget frontier and changed direct matcher are now measured; the recall target is not yet met and any final-score improvement remains unmeasured. PILOT_RESULTS.md records the exact populations and limits.
 
 No new external evaluation score, 99.99% recall, or completed submission is claimed until that particular artifact has actually been measured or produced.
