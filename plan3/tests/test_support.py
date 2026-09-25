@@ -41,3 +41,20 @@ def test_support_features_and_model_have_separate_contracts(tmp_path, monkeypatc
     assert read_json(run / "support_features_contract.json")["parent_model_sha256"] == "parent"
     assert read_json(run / "support_contract.json")["kind"] == "model"
     assert support.train_support(prepared, run) == {"status": "fixture"}
+
+
+def test_compact_seed_pool_preserves_third_group_after_self_exclusion():
+    from plan3.support import seeds_for, _evidence
+    import numpy as np
+    frame=pl.DataFrame({"s1_id":["q"]*6,"target_id":["a","b","c","d","e","f"],
+        "source":["S2"]*6,"p":[.99,.98,.98,.97,.96,.96],
+        "t_name":["first","second","second","third","fourth","fourth"],
+        "t_address":["1 road"]*6,"t_numbers":[["1"]]*6})
+    fast=support_features(frame,.95)
+    members=list(frame.iter_rows(named=True))
+    for row in members:
+        exact=_evidence(row,seeds_for(members,.95,row["target_id"],"S2"))
+        got=fast.filter(pl.col("target_id")==row["target_id"]).select(
+            "same_support_count","same_support_max_p","same_support_name_similarity",
+            "same_support_address_similarity","same_support_joint_similarity","same_support_number_conflict_share")
+        np.testing.assert_allclose(got.row(0),exact,rtol=1e-6,equal_nan=True)

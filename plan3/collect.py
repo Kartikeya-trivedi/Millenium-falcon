@@ -15,6 +15,9 @@ def collect(run: Path, output: Path):
     paths = {p for pattern in patterns for p in run.glob(pattern) if p.is_file()}
     paths.update(p for p in (run / "server_logs").glob("*.log") if p.is_file())
     paths.update(p for p in (run / "direct.txt", run / "support.txt") if p.exists())
+    paths.update(p for p in run.glob("support_*.txt") if p.is_file())
+    for directory in ("comparisons", "diagnostics", "onehop_probe"):
+        paths.update(p for p in (run/directory).rglob("*.json") if p.is_file())
     output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output, "x", compression=ZIP_DEFLATED) as bundle:
         for path in sorted(paths):

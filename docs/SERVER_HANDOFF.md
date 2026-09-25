@@ -101,7 +101,23 @@ After direct training succeeds, the same prepared data and features can support 
 uv run --locked python -m plan3.server --dataset "$DATASET" --work-root "$WORK" --profile full --threads 16 --start-at support --stop-after support
 ```
 
-It adds independently scored sibling and cross-source evidence. Its training owners come from the previously unused c_prob pool and were excluded from the direct model and learned transliteration dictionary. This pool is not also used for probability calibration. Predictions are evidence, never replacement truth labels. The runner keeps the direct model and does not automatically promote the support model. Its local feature generation completed, but its final model comparison is still pending; the direct run is the immediate handoff priority.
+It adds independently scored sibling and cross-source evidence. Its training owners come from the previously unused c_prob pool and were excluded from the direct model and learned transliteration dictionary. This pool is not also used for probability calibration. Predictions are evidence, never replacement truth labels. The runner keeps the direct model and does not automatically promote the support model. The local pilot improves development macro F0.5 from 0.951625 to 0.960921; repeat this comparison on the larger run.
+
+## Modal CPU execution
+
+The cloud branch includes an optional compute dependency and a persistent Modal job. Choose your own authenticated Modal profile explicitly. The app requests 16 physical CPU cores and 128 GiB RAM, with a 192 GiB hard limit, one active container and a 24-hour timeout. It uses a persistent falcon-record-runs volume for data, logs and checkpoints. It runs the full direct model, sibling model and retraining control, then packages their reports. Fresh Audit and final inference are separate stages.
+
+```bash
+uv sync --locked --extra compute
+export MODAL_PROFILE=your-profile
+uv run --locked --extra compute python -m plan3.modal_client upload --dataset /mnt/data/records
+uv run --locked --extra compute modal deploy -m plan3.modal_app
+uv run --locked --extra compute python -m plan3.modal_client submit --dataset-id DATASET_ID_FROM_UPLOAD --run-id full-rich-v1
+uv run --locked --extra compute python -m plan3.modal_client status --job work/modal/full-rich-v1.json
+uv run --locked --extra compute python -m plan3.modal_client download --job work/modal/full-rich-v1.json --out work/modal/full-rich-v1-results.zip
+```
+
+The archive contains exactly the seven supplied TSV files and their hashes. It is extracted into a private project volume, not placed in Git. Do not submit another job with the same run ID while it is running. See the official [Modal volume](https://modal.com/docs/guide/volumes) and [CPU resource](https://modal.com/docs/guide/resources) documentation for the storage and resource semantics.
 
 ## 6. Send back the result bundle
 

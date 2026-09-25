@@ -50,14 +50,32 @@ def _evidence(target,seeds):
 
 def support_features(frame: pl.DataFrame, threshold: float) -> pl.DataFrame:
     rows=[]
-    for group in frame.partition_by("s1_id",maintain_order=True):
+    fields=["s1_id","target_id","source","p","t_name","t_address","t_numbers"]
+    for group in frame.select(fields).partition_by("s1_id",maintain_order=True):
         members=list(group.iter_rows(named=True))
+        ordered=sorted(members,key=lambda r:(-r["p"],r["target_id"]))
+        pools={}
+        for source in ("S2","S3"):
+            groups={}
+            for candidate in ordered:
+                key=(candidate["t_name"],candidate["t_address"])
+                if candidate["source"]!=source or candidate["p"]<threshold or not any(key):
+                    continue
+                # Excluding one candidate can remove at most one evidence group.
+                # Three groups and two representatives each preserve the exact top two.
+                if key not in groups and len(groups)==3:
+                    continue
+                group_rows=groups.setdefault(key,[])
+                if len(group_rows)<2:
+                    group_rows.append(candidate)
+            pools[source]=[r for group_rows in groups.values() for r in group_rows]
         for row in members:
-            other=[s["p"] for s in members if s["target_id"]!=row["target_id"]]
-            best=max(other) if other else np.nan
+            best=(ordered[0]["p"] if ordered[0]["target_id"]!=row["target_id"] else
+                  ordered[1]["p"] if len(ordered)>1 else np.nan)
             values=[row["p"],best,row["p"]-best]
-            same=seeds_for(members,threshold,row["target_id"],row["source"])
-            cross=seeds_for(members,threshold,row["target_id"],"S3" if row["source"]=="S2" else "S2")
+            other_source="S3" if row["source"]=="S2" else "S2"
+            same=seeds_for(pools[row["source"]],threshold,row["target_id"],row["source"])
+            cross=seeds_for(pools[other_source],threshold,row["target_id"],other_source)
             values+=_evidence(row,same)+_evidence(row,cross)
             rows.append((row["s1_id"],row["target_id"],*values))
     out=pl.DataFrame(rows,schema={"s1_id":pl.String,"target_id":pl.String,

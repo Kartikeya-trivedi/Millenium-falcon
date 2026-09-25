@@ -46,6 +46,32 @@ Tune has 48 missed true candidates, 572 retrieved true candidates rejected by th
 
 Ordered macro-score loss: retrieval 0.00241603, true-candidate rejection 0.03189619, false acceptance 0.00964637 and panel ownership 0. These contributions sum to 1 minus the final Tune score. The largest measured gap remains rejection of true candidates, so the next bounded experiment adds sibling evidence on the same candidate set.
 
+## Sibling experiment and controls
+
+The sibling model is now measured. It trains on 3,000 c_prob owners that were excluded from the upstream direct model and transliteration dictionary. It uses 82 feature columns, including 15 score/relationship columns, and stops at 146 boosting rounds. Its threshold is 0.81, selected on the separate selection panel.
+
+| Model | Tune macro F0.5 | Select macro F0.5 | Development macro F0.5 |
+| --- | ---: | ---: | ---: |
+| Direct matcher | 0.956041 | 0.954140 | 0.951625 |
+| Second-stage control: direct features plus upstream score | 0.956669 | 0.955433 | 0.952165 |
+| Sibling support | 0.960309 | 0.963231 | 0.960921 |
+| Sibling support with score-mined negatives | 0.962271 | 0.964921 | 0.960532 |
+| Sibling support with separate missing-address threshold | 0.960385 | 0.963615 | 0.960860 |
+
+The relationship features add 0.008756 macro F0.5 over the retraining control on the same development owners. A paired bootstrap resampling whole owners gives a 95% interval of [0.005817, 0.012047]. This interval is conditional on the fitted models and decisions; it does not cover training, threshold-selection, label-noise or distribution-shift uncertainty. No fresh Audit was used.
+
+Keep the sibling model as the next larger comparison. Neither the score-mined negatives nor the extra missing-address threshold earns default status from this pilot: both have weaker development macro score than the simpler sibling model. The score-mined variant improves Tune/Select and may merit a larger independent check, but is not an established improvement.
+
+## Residual errors and one-hop probe
+
+With sibling support, Tune has 48 retrieval misses, 494 rejected true candidates and 75 false accepts. There are 2,681,854 unowned records among all 10,320,219 training targets (25.99%). They make up 15.52% of retrieved negative pairs but 40/75 false accepts (53.33%). These are different denominators; this does not justify forcing an arbitrary 40% negative-pair training mix.
+
+Of 322 true links with missing target addresses, 311 are retrieved and only 148 accepted. Of 496 true links with non-Latin names, 488 are retrieved and 454 accepted. The non-Latin flag covers any non-Latin script and should not be read as a Hindi-only statistic. Raw text and the existing Indic transliteration views remain intact.
+
+A single full-target word search from up to two predicted seed records per owner adds 11,443 candidates across Tune, recovering eight missed links. Recall moves from 99.3065% to 99.4220%; mean candidates move from 237.617 to 243.339, p95 to 273. The candidate oracle improves only from 0.997584 to 0.997782. This is a retrieval probe, not a measured matcher improvement. New candidates need a separately trained matcher and are not automatically accepted.
+
+The sibling feature implementation was optimized after this run. On a saved 29,298-pair shard, every feature value remained bit-for-bit equal, while runtime fell from 9.234 to 1.641 seconds (5.63x for that shard). This is not a full-training speed estimate.
+
 ## Next measurement
 
-Scale the changed direct model to the full training profile, then compare sibling support on the same evaluation owners. Keep full-world rival evidence and missing-owner stress as separate experiments. Do not infer a gain from the richer feature count alone, from candidate-oracle scores, or from comparing a 2,000-owner development subset with the teammate's older 20,000-owner result.
+Scale the changed direct model to the full training profile, then compare sibling support and its retraining control on the same evaluation owners. Keep full-world rival evidence and missing-owner stress as separate experiments. Do not infer a gain from the richer feature count alone, from candidate-oracle scores, or from comparing a 2,000-owner development subset with the teammate's older 20,000-owner result.

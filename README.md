@@ -6,9 +6,9 @@ Business record matching across three sources. A reference record may match zero
 
 Start with [the server commands and handoff guide](docs/SERVER_HANDOFF.md). The next run trains the new direct matcher at a larger scale; it does not repeat first-generation model training.
 
-The imported reference source is in plan1/. The new implementation in plan3/ includes deterministic data preparation, Indic transliteration, full-corpus sparse retrieval, candidate-budget selection, 67-column direct features, LightGBM training, threshold selection and four-class error accounting. An optional second model adds sibling and cross-source evidence; its comparison is pending. The terminal runner records stage logs and resumes compatible artifacts.
+The imported reference source is in plan1/. The new implementation in plan3/ includes deterministic data preparation, Indic transliteration, full-corpus sparse retrieval, candidate-budget selection, 67-column direct features, LightGBM training, threshold selection and four-class error accounting. A second model adds sibling and cross-source evidence. The terminal runner records stage logs and resumes compatible artifacts. The plan3-cloud branch adds persistent Modal CPU execution through the optional compute dependency.
 
-The changed direct-model pilot scores 0.951625 macro F0.5 on a 2,000-owner exposed development subset. Its Tune candidate recall is 99.3065% at mean 237.6 candidates per owner. These are local development measurements, not an external result or a fresh-Audit evaluation. See [the measured pilot results](docs/PILOT_RESULTS.md).
+The direct-model pilot scores 0.951625 macro F0.5 on a 2,000-owner exposed development subset; sibling support scores 0.960921. A control trained on the same second-stage owners without relationship features scores 0.952165. Tune candidate recall is 99.3065% at mean 237.6 candidates per owner. These are local development measurements, not an external result or a fresh-Audit evaluation. See [the measured pilot results](docs/PILOT_RESULTS.md).
 
 The reference report records an external F0.5 score of 0.9388. That is supplied reference evidence, not a result reproduced by this repository. The development target is at least 99.5% candidate recall with mean at most 400 and p95 at most 500 candidates per query. Final selection uses macro F0.5, including empty answers.
 
