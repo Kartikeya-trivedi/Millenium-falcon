@@ -76,11 +76,27 @@ def status(job_file: Path):
     except TimeoutError:
         print("Cloud job is running.", flush=True)
     volume = modal.Volume.from_name(job["volume"])
-    path = f"/runs/{job['run_id']}/runs/{job['profile']}-w100-m25/server_status.json"
+    path = (f"/runs/{job['run_id']}/test_assets/status.json" if job.get("kind") == "test-assets" else
+            f"/runs/{job['run_id']}/runs/{job['profile']}-w100-m25/server_status.json")
     try:
         print(b"".join(volume.read_file(path)).decode(), flush=True)
     except FileNotFoundError:
         print("Preparing the input dataset; no pipeline stage status yet.", flush=True)
+
+
+def submit_test_assets(parent_job: Path):
+    import modal
+    parent = read_json(parent_job)
+    path = parent_job.with_name(parent_job.stem + "-test-assets.json")
+    if path.exists():
+        raise ValueError(f"Job already recorded at {path}; check it before resubmitting")
+    app = APP + "-followup"
+    call = modal.Function.from_name(app, "prepare_test_job").spawn(parent["run_id"])
+    job = {**parent, "kind": "test-assets", "app": app, "call_id": call.object_id,
+           "submitted_at": datetime.now(timezone.utc).isoformat()}
+    write_json(path, job)
+    print(json.dumps(job, indent=2), flush=True)
+    return job
 
 
 def download(job_file: Path, out: Path):
@@ -107,6 +123,8 @@ def main():
     s.add_argument("--out", type=Path, default=ROOT/"work/modal")
     g = sub.add_parser("status")
     g.add_argument("--job", type=Path, required=True)
+    a = sub.add_parser("prepare-test")
+    a.add_argument("--job", type=Path, required=True)
     d = sub.add_parser("download")
     d.add_argument("--job", type=Path, required=True)
     d.add_argument("--out", type=Path, required=True)
@@ -117,6 +135,8 @@ def main():
         submit(args.dataset_id, args.run_id, args.out, args.profile)
     elif args.command == "status":
         status(args.job)
+    elif args.command == "prepare-test":
+        submit_test_assets(args.job)
     else:
         download(args.job, args.out)
 

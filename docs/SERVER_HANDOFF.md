@@ -105,7 +105,7 @@ It adds independently scored sibling and cross-source evidence. Its training own
 
 ## Modal CPU execution
 
-The cloud branch includes an optional compute dependency and a persistent Modal job. Choose your own authenticated Modal profile explicitly. The app requests 16 physical CPU cores and 128 GiB RAM, with a 192 GiB hard limit, one active container and a 24-hour timeout. It uses a persistent falcon-record-runs volume for data, logs and checkpoints. It runs the full direct model, sibling model and retraining control, then packages their reports. Fresh Audit and final inference are separate stages.
+The project includes an optional compute dependency and a persistent Modal job. Choose your own authenticated Modal profile explicitly. The app requests 16 physical CPU cores and 128 GiB RAM, with a 192 GiB hard limit, one active container and a 24-hour timeout. It uses a persistent falcon-record-runs volume for data, logs and checkpoints. It runs the full direct model, sibling model and retraining control, then packages their reports. Fresh Audit and final inference are separate stages. Keep an active job on its recorded code revision; use a separate checkout for updates.
 
 ```bash
 uv sync --locked --extra compute
@@ -116,6 +116,16 @@ uv run --locked --extra compute python -m plan3.modal_client submit --dataset-id
 uv run --locked --extra compute python -m plan3.modal_client status --job work/modal/full-rich-v1.json
 uv run --locked --extra compute python -m plan3.modal_client download --job work/modal/full-rich-v1.json --out work/modal/full-rich-v1-results.zip
 ```
+
+After the parent preparation stage completes, test views and indexes can run independently while training continues:
+
+```bash
+uv run --locked --extra compute modal deploy -m plan3.modal_followup
+uv run --locked --extra compute python -m plan3.modal_client prepare-test --job work/modal/full-rich-v1.json
+uv run --locked --extra compute python -m plan3.modal_client status --job work/modal/full-rich-v1-test-assets.json
+```
+
+This second job uses 8 CPU cores, 32 GiB reserved RAM and a 64 GiB limit. It writes only test assets under the same persistent work root. It does not choose a model or evaluate labels.
 
 The archive contains exactly the seven supplied TSV files and their hashes. It is extracted into a private project volume, not placed in Git. Do not submit another job with the same run ID while it is running. See the official [Modal volume](https://modal.com/docs/guide/volumes) and [CPU resource](https://modal.com/docs/guide/resources) documentation for the storage and resource semantics.
 
@@ -133,4 +143,21 @@ The useful checkpoints are direct_report.json, direct_meta.json, direct_decision
 
 The direct-model pilot development score was 0.951625 on 2,000 owners. Its candidate recall on Tune was 99.306% with 237.6 mean candidates per owner; it did not meet the 99.5% target. This is a development experiment, not an external score or a fresh-Audit result. The supplied reference score of 0.9388 is accepted without reproducing that run.
 
-The next server run expands training and evaluation of the new direct matcher. It does not yet establish full-population ownership, the test orphan-rate stress ablation, unseen-country accuracy or final inference/export readiness. Fresh Audit evaluation and final output generation are later, separate steps. See PILOT_RESULTS.md and PLAN.md for the measured evidence and remaining experiments.
+The next server run expands training and evaluation of the new direct matcher. It does not yet establish full-population ownership, missing-owner robustness or unseen-country accuracy. A doubled unowned-negative weighting ablation worsened the pilot and was rejected. See PILOT_RESULTS.md and PLAN.md for the measured evidence and remaining experiments.
+
+## Frozen-model inference, evaluation and output
+
+Use these commands after selecting the model from development evidence. The inference contract freezes model hashes, the saved Select threshold, proposal budgets, retained candidate cuts and preprocessing. Current choices are direct and support. Inference deliberately queries the original W200/M100 proposals before keeping the trained candidate budget, because channel ranks and presence beyond that final cut are part of the trained features.
+
+```bash
+RUN="$WORK/runs/full-w100-m25"
+uv run --locked python -m plan3.inference --prepared "$WORK/prepared" --views "$WORK/views" --indexes "$WORK/indexes" --model-run "$RUN" --out "$WORK/fresh-audit" --model support --split train --queries "$WORK/prepared/fresh_audit.parquet" --threads 16
+uv run --locked python -m plan3.audit --prepared "$WORK/prepared" --inference "$WORK/fresh-audit" --out "$WORK/fresh-audit/report" --panel fresh-audit
+uv run --locked python -m plan3 views --prepared "$WORK/prepared" --out "$WORK/views" --split test
+uv run --locked python -m plan3.inference --prepared "$WORK/prepared" --views "$WORK/views" --indexes "$WORK/indexes" --model-run "$RUN" --out "$WORK/test-inference" --model support --split test --threads 16
+uv run --locked python -m plan3.export --inference "$WORK/test-inference" --test-dir "$DATASET/test" --out "$WORK/output"
+```
+
+The Audit evaluator reports the declared claimant population and forbids Fit/dictionary or support-training owners as held-out rivals. Scoring only the reserved Audit owners gives ownership across that panel, not a full-test ownership estimate. The first fresh-Audit evaluation records the frozen configuration and refuses a different model/decision on that same reserved population. Development evaluation uses --panel development and excludes reserved Audit owners.
+
+Output includes every raw test S1 in original order, including empty candidates and matches. Ownership is resolved globally across score shards. Inputs, scores and output bytes are authenticated, and altered committed checkpoints fail. The exporter validates target existence, countries, duplicate pairs, probability ranges and exact candidate membership. Run the supplied validator separately on the completed outputs with its --check-ids option. Fixture validation and the 20-owner inference consistency check do not establish full-data output success or fresh-Audit accuracy.

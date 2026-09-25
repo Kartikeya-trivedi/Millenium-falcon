@@ -57,10 +57,13 @@ The sibling model is now measured. It trains on 3,000 c_prob owners that were ex
 | Sibling support | 0.960309 | 0.963231 | 0.960921 |
 | Sibling support with score-mined negatives | 0.962271 | 0.964921 | 0.960532 |
 | Sibling support with separate missing-address threshold | 0.960385 | 0.963615 | 0.960860 |
+| Sibling support with unowned-negative weights doubled | 0.959231 | 0.959354 | 0.958175 |
 
 The relationship features add 0.008756 macro F0.5 over the retraining control on the same development owners. A paired bootstrap resampling whole owners gives a 95% interval of [0.005817, 0.012047]. This interval is conditional on the fitted models and decisions; it does not cover training, threshold-selection, label-noise or distribution-shift uncertainty. No fresh Audit was used.
 
 Keep the sibling model as the next larger comparison. Neither the score-mined negatives nor the extra missing-address threshold earns default status from this pilot: both have weaker development macro score than the simpler sibling model. The score-mined variant improves Tune/Select and may merit a larger independent check, but is not an established improvement.
+
+The predeclared unowned-negative weighting ablation also fails. The same 106,325 sampled training pairs are retained, with 17,770 unowned negatives receiving twice their original sampling weight. No owner-status field is a model input, positives are unchanged, and no pair prevalence is forced. Development macro F0.5 changes by -0.002746, with paired owner-bootstrap 95% interval [-0.005065, -0.000842]. Tune unowned false accepts decrease from 40 to 37, but total false accepts rise from 75 to 76 and rejected true candidates rise from 494 to 503. Keep the original weighting.
 
 ## Residual errors and one-hop probe
 
@@ -71,6 +74,8 @@ Of 322 true links with missing target addresses, 311 are retrieved and only 148 
 A single full-target word search from up to two predicted seed records per owner adds 11,443 candidates across Tune, recovering eight missed links. Recall moves from 99.3065% to 99.4220%; mean candidates move from 237.617 to 243.339, p95 to 273. The candidate oracle improves only from 0.997584 to 0.997782. This is a retrieval probe, not a measured matcher improvement. New candidates need a separately trained matcher and are not automatically accepted.
 
 The sibling feature implementation was optimized after this run. On a saved 29,298-pair shard, every feature value remained bit-for-bit equal, while runtime fell from 9.234 to 1.641 seconds (5.63x for that shard). This is not a full-training speed estimate.
+
+The new streamed inference path was checked on 20 existing pilot owners: all 4,932 candidate pairs and direct-model probabilities matched exactly, with maximum probability difference zero. This checks implementation consistency, not model accuracy on a new population. The output writer passes 22 focused tests and the supplied validator on an exported fixture with ID checks. Full test inference and full-data output validation are still pending.
 
 ## Next measurement
 
