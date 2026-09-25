@@ -8,11 +8,55 @@ from rapidfuzz import fuzz
 
 from .artifacts import contract, parquet, read_json, sha256, write_json
 from .features import FEATURES
+from .featurize import bounded_process_jobs, initialize_native_threads
 from .train import fit_model, predict_model, evaluate_model
 
 SUPPORT_FEATURES = ["p1","best_other_p","p1_gap_other"] + [
     f"{source}_support_{name}" for source in ("same","cross") for name in
     ("count","max_p","name_similarity","address_similarity","joint_similarity","number_conflict_share")]
+
+_WORKER_THRESHOLD = None
+_WORKER_LIMITS = None
+
+
+def _initialize_support_worker(threshold, threads):
+    global _WORKER_THRESHOLD, _WORKER_LIMITS
+    _WORKER_THRESHOLD = threshold
+    _WORKER_LIMITS = initialize_native_threads(threads)
+
+
+def _write_support_file(job, threshold):
+    source, output = job
+    frame = pl.read_parquet(source)
+    if (frame["sample"] == "fit").any():
+        raise ValueError("In-sample upstream predictions are forbidden for support training")
+    extra = support_features(frame, threshold)
+    result = frame.join(extra, on=["s1_id", "target_id"], how="left", maintain_order="left")
+    if result.height != frame.height or not result.select("s1_id", "target_id").equals(frame.select("s1_id", "target_id")):
+        raise ValueError("Support features changed candidate rows or order")
+    parquet(output, result)
+    return source.name, result.height
+
+
+def _process_support_file(job):
+    if _WORKER_THRESHOLD is None:
+        raise RuntimeError("Support worker has not been initialized")
+    return _write_support_file(job, _WORKER_THRESHOLD)
+
+
+def generate_support_files(run: Path, threshold, workers=1, worker_threads=1):
+    """Each source file contains complete owner groups and gets one worker."""
+    if workers < 1 or not 1 <= worker_threads <= 4:
+        raise ValueError("Positive workers and one to four native threads per worker are required")
+    jobs = ((path, run / "support_features" / path.name)
+            for path in sorted((run / "direct_scores").glob("*.parquet"))
+            if not (run / "support_features" / path.name).exists())
+    if workers == 1:
+        for job in jobs:
+            yield _write_support_file(job, threshold)
+    else:
+        yield from bounded_process_jobs(jobs, _process_support_file, initializer=_initialize_support_worker,
+            initargs=(threshold, worker_threads), workers=workers, worker_threads=worker_threads)
 
 
 def seeds_for(rows, threshold, exclude=None, source=None):
@@ -118,7 +162,9 @@ def choose_seed_threshold(run):
     return threshold
 
 
-def train_support(prepared: Path,run: Path,threads=4,max_rounds=6000):
+def train_support(prepared: Path,run: Path,threads=4,max_rounds=6000,workers=1,worker_threads=1):
+    if workers < 1 or not 1 <= worker_threads <= 4:
+        raise ValueError("Positive workers and one to four native threads per worker are required")
     direct=read_json(run/"direct_meta.json")
     if direct["sample"]!="fit":
         raise ValueError("M0 was not trained exclusively on the declared Fit population")
@@ -128,16 +174,12 @@ def train_support(prepared: Path,run: Path,threads=4,max_rounds=6000):
     contract(run/"support_features_contract.json",{"parent_model_sha256":direct["model_sha256"],
              "support_code":sha256(Path(__file__)),"seed_threshold":threshold,
              "support_training_pool":"c_prob","upstream_training_pool":"fit",
-             "features":FEATURES+SUPPORT_FEATURES,"competitor_probabilities_used_in_model":False})
-    for path in sorted((run/"direct_scores").glob("*.parquet")):
-        output=run/"support_features"/path.name
-        if output.exists():
-            continue
-        frame=pl.read_parquet(path)
-        if (frame["sample"]=="fit").any():
-            raise ValueError("In-sample upstream predictions are forbidden for support training")
-        extra=support_features(frame,threshold)
-        parquet(output,frame.join(extra,on=["s1_id","target_id"],how="left",maintain_order="left"))
+             "features":FEATURES+SUPPORT_FEATURES,"competitor_probabilities_used_in_model":False,
+             "workers":workers,"worker_threads":worker_threads,
+             "batch_execution_code":sha256(Path(__file__).with_name("featurize.py"))})
+    for count, (name, pairs) in enumerate(generate_support_files(run,threshold,workers,worker_threads),1):
+        if count == 1 or count % 5 == 0:
+            print(f"Support features: completed {count:,} new batches; {name} has {pairs:,} pairs",flush=True)
     features=FEATURES+SUPPORT_FEATURES
     model=fit_model(prepared,run,features,run/"support_features","support","support",threads,max_rounds)
     predict_model(run,model,run/"support_features",run/"support_scores",features,threads)

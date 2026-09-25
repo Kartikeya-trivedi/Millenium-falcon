@@ -72,7 +72,7 @@ def status(job_file: Path):
     call = modal.FunctionCall.from_id(job["call_id"])
     try:
         result = call.get(timeout=0)
-        if job.get("kind") == "finish":
+        if job.get("kind") in ("finish", "fast"):
             child_id = result["finish_call_id"]
             try:
                 result = modal.FunctionCall.from_id(child_id).get(timeout=0)
@@ -84,14 +84,15 @@ def status(job_file: Path):
     except TimeoutError:
         print("Cloud job is running.", flush=True)
     volume = modal.Volume.from_name(job["volume"])
-    path = (f"/runs/{job['run_id']}/finish_queue.json" if job.get("kind") == "finish" else
+    path = (f"/runs/{job['run_id']}/runs/full-w100-m25/accelerated_status.json" if job.get("kind") == "fast" else
+            f"/runs/{job['run_id']}/finish_queue.json" if job.get("kind") == "finish" else
             f"/runs/{job['run_id']}/test_assets/status.json" if job.get("kind") == "test-assets" else
             f"/runs/{job['run_id']}/runs/{job['profile']}-w100-m25/server_status.json")
     try:
         print(b"".join(volume.read_file(path)).decode(), flush=True)
     except FileNotFoundError:
         print("Preparing the input dataset; no pipeline stage status yet.", flush=True)
-    if job.get("kind") == "finish":
+    if job.get("kind") in ("finish", "fast"):
         try:
             print(b"".join(volume.read_file(f"/runs/{job['run_id']}/final/status.json")).decode(), flush=True)
         except FileNotFoundError:
@@ -145,6 +146,26 @@ def submit_finish(parent_job: Path, test_assets_job: Path, validator: Path):
     return job
 
 
+def submit_fast(parent_job: Path, finish_job: Path):
+    import modal
+    parent, finish = read_json(parent_job), read_json(finish_job)
+    if (parent["profile"] != "full" or parent["run_id"] != finish["run_id"]
+            or finish.get("kind") != "finish" or parent["dataset_id"] != finish["dataset_id"]):
+        raise ValueError("Matching original full training and finishing queue required")
+    path = parent_job.with_name(parent_job.stem + "-fast.json")
+    if path.exists():
+        raise ValueError(f"Accelerated job already recorded: {path}")
+    app = APP + "-fast"
+    call = modal.Function.from_name(app, "continue_fast").spawn(parent["run_id"], parent["call_id"],
+        finish["call_id"], finish["validator_sha256"])
+    job = {**parent, "kind": "fast", "app": app, "call_id": call.object_id,
+           "validator_sha256": finish["validator_sha256"], "cpu_cores": 64,
+           "feature_workers": 64, "submitted_at": datetime.now(timezone.utc).isoformat()}
+    write_json(path, job)
+    print(json.dumps(job, indent=2), flush=True)
+    return job
+
+
 def download(job_file: Path, out: Path):
     import modal
     job = read_json(job_file)
@@ -153,10 +174,10 @@ def download(job_file: Path, out: Path):
     if out.exists():
         raise FileExistsError(out)
     expected = None
-    if job.get("kind") == "finish":
+    if job.get("kind") in ("finish", "fast"):
         complete = json.loads(b"".join(volume.read_file(f"/runs/{job['run_id']}/final/complete.json")))
         expected = complete["archive_sha256"]
-    remote = (f"/runs/{job['run_id']}/final/outputs.zip" if job.get("kind") == "finish" else
+    remote = (f"/runs/{job['run_id']}/final/outputs.zip" if job.get("kind") in ("finish", "fast") else
               f"/runs/{job['run_id']}/results.zip")
     from uuid import uuid4
     temp = out.with_name(out.name + "." + uuid4().hex + ".partial")
@@ -192,6 +213,9 @@ def main():
     f.add_argument("--job", type=Path, required=True)
     f.add_argument("--test-assets-job", type=Path, required=True)
     f.add_argument("--validator", type=Path, required=True)
+    fast = sub.add_parser("accelerate")
+    fast.add_argument("--job", type=Path, required=True)
+    fast.add_argument("--finish-job", type=Path, required=True)
     d = sub.add_parser("download")
     d.add_argument("--job", type=Path, required=True)
     d.add_argument("--out", type=Path, required=True)
@@ -206,6 +230,8 @@ def main():
         submit_test_assets(args.job)
     elif args.command == "finish":
         submit_finish(args.job, args.test_assets_job, args.validator)
+    elif args.command == "accelerate":
+        submit_fast(args.job, args.finish_job)
     else:
         download(args.job, args.out)
 

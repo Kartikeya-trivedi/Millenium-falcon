@@ -177,3 +177,16 @@ uv run --locked python -m plan3.export --inference "$WORK/test-inference" --test
 The Audit evaluator reports the declared claimant population and forbids Fit/dictionary or support-training owners as held-out rivals. Scoring only the reserved Audit owners gives ownership across that panel, not a full-test ownership estimate. The first fresh-Audit evaluation records the frozen configuration and refuses a different model/decision on that same reserved population. Development evaluation uses --panel development and excludes reserved Audit owners.
 
 Output includes every raw test S1 in original order, including empty candidates and matches. Ownership is resolved globally across score shards. Inputs, scores and output bytes are authenticated, and altered committed checkpoints fail. The exporter validates target existence, countries, duplicate pairs, probability ranges and exact candidate membership. Run the supplied validator separately on the completed outputs with its --check-ids option. Fixture validation and the 20-owner inference consistency check do not establish full-data output success or fresh-Audit accuracy.
+
+### 64-core continuation
+
+For the stopped full run with all eight retrieval searches already saved, the fast app reserves 64 physical CPU cores and 192 GiB RAM, with a 256 GiB memory limit. It reuses preparation, transliteration, indexes and channel searches. It requires the original training call and finishing queue to be terminated before it can write to that run. It records a separate accelerated execution contract rather than changing the old contracts.
+
+```bash
+uv run --locked --extra compute modal deploy -m plan3.modal_fast
+uv run --locked --extra compute python -m plan3.modal_client accelerate --job work/modal/full-rich-v1.json --finish-job work/modal/full-rich-v1-finish.json
+uv run --locked --extra compute python -m plan3.modal_client status --job work/modal/full-rich-v1-fast.json
+uv run --locked --extra compute python -m plan3.modal_client download --job work/modal/full-rich-v1-fast.json --out work/modal/full-rich-v1-fast-outputs.zip
+```
+
+Feature construction uses 64 independent processes with one native thread each and a bounded work queue. A complete owner's candidates always stay together, preserving relative features and sibling evidence. Model fitting uses 64 threads. After the comparisons succeed, the job starts a separate 64-core finishing worker for the fixed selection rule, protected Audit, test inference and validation. Each worker has its own 24-hour timeout. No speedup or final score is assumed before measurement.

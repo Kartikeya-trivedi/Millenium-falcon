@@ -41,6 +41,8 @@ def main():
     f.add_argument("--query-batch",type=int,default=250)
     f.add_argument("--word-k",type=int)
     f.add_argument("--missing-k",type=int)
+    f.add_argument("--workers",type=int,default=1)
+    f.add_argument("--worker-threads",type=int,default=4)
     t=sub.add_parser("train")
     t.add_argument("--prepared",type=Path,default=ROOT/"work/plan3/prepared")
     t.add_argument("--run",type=Path,required=True)
@@ -51,6 +53,8 @@ def main():
     s.add_argument("--run",type=Path,required=True)
     s.add_argument("--threads",type=int,default=4)
     s.add_argument("--max-rounds",type=int,default=6000)
+    s.add_argument("--workers",type=int,default=1)
+    s.add_argument("--worker-threads",type=int,default=1)
     args = parser.parse_args()
     if args.command == "prepare":
         from .prepare import prepare
@@ -68,13 +72,14 @@ def main():
         select_budget(args.prepared,args.run)
     elif args.command == "features":
         from .featurize import featurize
-        featurize(args.prepared,args.views,args.indexes,args.run,args.query_batch,args.word_k,args.missing_k)
+        featurize(args.prepared,args.views,args.indexes,args.run,args.query_batch,args.word_k,args.missing_k,
+                  args.workers,args.worker_threads)
     elif args.command == "train":
         from .train import train_direct
         train_direct(args.prepared,args.run,args.threads,args.max_rounds)
     elif args.command == "support":
         from .support import train_support
-        train_support(args.prepared,args.run,args.threads,args.max_rounds)
+        train_support(args.prepared,args.run,args.threads,args.max_rounds,args.workers,args.worker_threads)
 
 
 if __name__ == "__main__":
