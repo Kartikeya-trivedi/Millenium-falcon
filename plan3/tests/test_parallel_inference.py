@@ -14,6 +14,7 @@ from plan3.features import FEATURES
 from plan3.index import SparseIndex
 from plan3.inference import infer, partition_queries
 from plan3.parallel_inference import merge_partitions, parallel_infer, partitions
+from plan3.parallel_inference import _COMPATIBLE_EXECUTOR_HASHES, _executor_contract, _limit_rapidfuzz
 from plan3.views import build_views
 from plan3.tests.test_export import make_inputs
 
@@ -191,3 +192,73 @@ def test_spawned_full_inference_matches_serial_scores_and_outputs(tmp_path):
         assert (serial/"output"/name).read_bytes() == (parallel/"output"/name).read_bytes()
     parallel_infer(prepared, views, indexes, model, parallel, model_name="direct",
                    workers=2, threads=1, query_batch=2, feature_batch=1)
+    # An interrupted prior executor can reuse authenticated child shards.
+    old = read_json(parallel/"inference_contract.json")
+    old["parallel_code"] = next(iter(_COMPATIBLE_EXECUTOR_HASHES))
+    write_json(parallel/"inference_contract.json", old)
+    (parallel/"inference_complete.json").unlink()
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (parallel/"scores").rglob("*.parquet")}
+    parallel_infer(prepared, views, indexes, model, parallel, model_name="direct",
+                   workers=2, threads=1, query_batch=2, feature_batch=1)
+    assert read_json(parallel/"inference_contract.json") == old
+    assert_frame_equal(scores(serial), scores(parallel), check_exact=True)
+    assert before == {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before}
+
+
+def test_rapidfuzz_cap_preserves_exact_scores_and_explicit_workers(monkeypatch):
+    from rapidfuzz import fuzz, process
+    from rapidfuzz.distance import JaroWinkler
+    original = process.cpdist
+    monkeypatch.setattr(process, "cpdist", original)
+    a = ["Alpha Tools", "beta limited", "", "दिल्ली व्यापार", "12 Main Road"] * 30
+    b = ["alpha tool", "limited beta", "", "दिल्ली व्यापार", "12 Main Rd"] * 30
+    scorers = (fuzz.ratio, fuzz.token_set_ratio, fuzz.token_sort_ratio, fuzz.partial_ratio,
+               JaroWinkler.normalized_similarity)
+    expected = [original(a, b, scorer=s, workers=-1, dtype=np.float32) for s in scorers]
+    calls = []
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("workers"))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(process, "cpdist", spy)
+    _limit_rapidfuzz(2)
+    for scorer, values in zip(scorers, expected):
+        np.testing.assert_array_equal(process.cpdist(a, b, scorer=scorer, workers=-1, dtype=np.float32), values)
+    process.cpdist(a, b, workers=1)
+    assert calls == [2]*len(scorers) + [1]
+
+
+def test_executor_resume_preserves_prior_contract_scores_and_records_current_code(tmp_path):
+    prior = next(iter(_COMPATIBLE_EXECUTOR_HASHES))
+    spec = {"parallel_code": prior, "threads": 4, "workers": 16, "frozen": {"model": "direct"}}
+    write_json(tmp_path/"inference_contract.json", spec)
+    original_contract = (tmp_path/"inference_contract.json").read_bytes()
+    score = tmp_path/"scores/one.parquet"
+    score.parent.mkdir()
+    pl.DataFrame({"p": [.1, .8]}).write_parquet(score)
+    original_score = score.read_bytes()
+    selected = _executor_contract(tmp_path, {**spec, "parallel_code": "current-executor"})
+    assert selected == spec
+    assert (tmp_path/"inference_contract.json").read_bytes() == original_contract
+    assert score.read_bytes() == original_score
+    record = read_json(next((tmp_path/"executors").glob("*.json")))
+    assert record["executor_sha256"] == "current-executor"
+    assert record["contract_parallel_code"] == prior
+    assert record["rapidfuzz_workers_for_minus_one"] == 4
+    assert record["resumed"] is True
+
+
+@pytest.mark.parametrize("change", ["unknown_hash", "frozen", "threads"])
+def test_executor_resume_rejects_unknown_hash_or_other_contract_changes(tmp_path, change):
+    prior = next(iter(_COMPATIBLE_EXECUTOR_HASHES))
+    spec = {"parallel_code": prior, "threads": 4, "workers": 16, "frozen": {"model": "direct"}}
+    if change == "unknown_hash":
+        spec["parallel_code"] = "unrecognized"
+    write_json(tmp_path/"inference_contract.json", spec)
+    requested = {**spec, "parallel_code": "current-executor"}
+    if change == "frozen":
+        requested["frozen"] = {"model": "support"}
+    elif change == "threads":
+        requested["threads"] = 2
+    with pytest.raises(ValueError):
+        _executor_contract(tmp_path, requested)
+    assert not (tmp_path/"executors").exists()

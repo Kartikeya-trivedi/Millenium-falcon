@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+from functools import wraps
+import os
 from pathlib import Path
+from time import perf_counter
+from uuid import uuid4
 import polars as pl
 
 from .artifacts import contract, fingerprint, load_prepared, parquet, read_json, sha256, write_json
@@ -11,6 +16,63 @@ from .featurize import bounded_process_jobs, initialize_native_threads
 from .inference import infer, load_models
 
 _NATIVE_LIMITS = None
+# The only earlier executor admitted here differs in thread scheduling only.
+_COMPATIBLE_EXECUTOR_HASHES = frozenset({
+    "43fabcb232c0afcfeefa19a551d252f43716663e67471375783ab9ad726794c8",
+})
+
+
+def _limit_rapidfuzz(threads):
+    from rapidfuzz import process
+
+    original = getattr(process.cpdist, "_plan3_original", process.cpdist)
+
+    @wraps(original)
+    def limited(*args, **kwargs):
+        if kwargs.get("workers") == -1:
+            kwargs["workers"] = threads
+        return original(*args, **kwargs)
+
+    limited._plan3_original = original
+    process.cpdist = limited
+
+
+def _timed(function, label):
+    original = getattr(function, "_plan3_original", function)
+
+    @wraps(original)
+    def timed(*args, **kwargs):
+        start = perf_counter()
+        result = original(*args, **kwargs)
+        print(f"Worker {os.getpid()} {label}: {perf_counter()-start:.3f}s; {result.height:,} rows", flush=True)
+        return result
+
+    timed._plan3_original = original
+    return timed
+
+
+def _executor_contract(out: Path, spec: dict):
+    """Preserve a known prior contract while recording this actual executor."""
+    path = out / "inference_contract.json"
+    current = spec["parallel_code"]
+    selected = spec
+    existed = path.exists()
+    if existed:
+        prior = read_json(path).get("parallel_code")
+        if prior != current:
+            if prior not in _COMPATIBLE_EXECUTOR_HASHES:
+                raise ValueError("Unknown prior parallel executor hash")
+            selected = {**spec, "parallel_code": prior}
+    # All other fields remain exactly equal, including every model/data hash.
+    contract(path, selected)
+    write_json(out / "executors" / f"{uuid4().hex}.json", {
+        "invoked_at": datetime.now(timezone.utc).isoformat(),
+        "executor_sha256": current, "contract_parallel_code": selected["parallel_code"],
+        "contract_sha256": sha256(path), "resumed": existed,
+        "rapidfuzz_workers_for_minus_one": spec["threads"],
+        "workers": spec["workers"], "per_call_timing": True,
+    })
+    return selected
 
 
 def partitions(roster: pl.DataFrame, workers: int):
@@ -28,6 +90,10 @@ def partitions(roster: pl.DataFrame, workers: int):
 def _initialize(threads):
     global _NATIVE_LIMITS
     _NATIVE_LIMITS = initialize_native_threads(threads)
+    _limit_rapidfuzz(threads)
+    from . import inference
+    inference.retrieve_batch = _timed(inference.retrieve_batch, "retrieve")
+    inference.predict_candidates = _timed(inference.predict_candidates, "features+predict")
 
 
 def _run_partition(job):
@@ -111,7 +177,7 @@ def parallel_infer(prepared: Path, views: Path, indexes: Path, model_run: Path, 
             "partitions": partitions(roster, workers), "parallel_code": sha256(Path(__file__)),
             "inference_code": sha256(Path(__file__).with_name("inference.py")),
             "view_contract_sha256": sha256(views / "test_contract.json")}
-    contract(out / "inference_contract.json", spec)
+    spec = _executor_contract(out, spec)
     if (out / "inference_complete.json").exists():
         _, complete, stored = inference_manifest(out)
         if not stored.equals(roster):
