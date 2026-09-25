@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+work/
+dataset/
+student_resource/
+output/
+*.parquet
+*.npz
+*.npy
+*.log
+.env
+.env.*
