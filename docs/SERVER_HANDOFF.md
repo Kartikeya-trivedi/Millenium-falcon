@@ -14,17 +14,20 @@ The default scoring set is W100 plus M25 per target source: word retrieval propo
 
 ## 1. Install on a Linux server
 
-Use Python 3.12 and run from the repository root. If Python or its venv module is missing, have the server administrator provide it. Linux LightGBM also needs the system OpenMP runtime, commonly libgomp1. There is no CUDA setup for this release.
+Use uv from the repository root. It installs Python 3.12 and creates the project environment from the committed uv.lock. Linux LightGBM also needs the system OpenMP runtime, commonly libgomp1. There is no CUDA setup for this release.
 
 ```bash
 git clone https://github.com/Kartikeya-trivedi/Millenium-falcon.git
 cd Millenium-falcon
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r plan3/requirements.txt
-POLARS_MAX_THREADS=4 OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 python -m pytest plan3/tests -q
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv python install 3.12
+uv sync --locked
+POLARS_MAX_THREADS=4 OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1 uv run --locked python -m pytest plan3/tests -q
 git rev-parse HEAD
 ```
+
+Skip the installer if uv is already available. The default sync includes the development group used by the tests and preflight. Do not pass --no-dev. Dependency versions match the measured pipeline; uv adds reproducible dependency resolution and cached downloads. See [uv project management](https://docs.astral.sh/uv/guides/projects/) and [installation](https://docs.astral.sh/uv/getting-started/installation/) for the upstream instructions.
 
 Record that commit with the run. Keep the checkout unchanged while a run is active. Do not run git pull in the middle of it: source and dependency hashes are part of cache validation.
 
@@ -56,12 +59,11 @@ Test files are not required for training. To prepare them in the same snapshot, 
 Replace both /mnt paths with real server paths. Use persistent SSD storage for WORK, with enough free space. A single work root belongs to one fixed code/data/configuration snapshot.
 
 ```bash
-source .venv/bin/activate
 DATASET=/mnt/data/records
 WORK=/mnt/record-runs/p3-v1
 
-python -m plan3.server --dataset "$DATASET" --work-root "$WORK" --profile full --threads 16 --check-only
-python -m plan3.server --dataset "$DATASET" --work-root "$WORK" --profile full --threads 16 --stop-after train
+uv run --locked python -m plan3.server --dataset "$DATASET" --work-root "$WORK" --profile full --threads 16 --check-only
+uv run --locked python -m plan3.server --dataset "$DATASET" --work-root "$WORK" --profile full --threads 16 --stop-after train
 ```
 
 Run the second command inside your existing job scheduler allocation or a persistent terminal such as tmux. Request one CPU node; this release does not distribute one job across machines. The runner streams progress, saves a log per stage, stops on the first failed stage and records the active stage in server_status.json. Changing --threads or --max-rounds within an existing run changes its contract; keep the same values when resuming.
@@ -86,7 +88,7 @@ Use the log matching the current stage. Retrieve and features can take much long
 After an interruption, reissue the original command with the same configuration. Completed, compatible artifacts are reused. An interrupted channel search restarts that channel; completed feature shards are retained. A boosting fit interrupted before its final model is saved restarts the fit. To start directly at a known unfinished stage:
 
 ```bash
-python -m plan3.server --dataset "$DATASET" --work-root "$WORK" --profile full --threads 16 --start-at train --stop-after train
+uv run --locked python -m plan3.server --dataset "$DATASET" --work-root "$WORK" --profile full --threads 16 --start-at train --stop-after train
 ```
 
 For an out-of-memory exit, keep the logs and report the stage and machine RAM; do not remove targets or change labels. For a contract mismatch, use a new work root for changed code/data/settings rather than editing hashes. A force-killed runner may leave server_running.lock in the run directory. Verify that its process and child training process have stopped before removing that one lock file. Never launch two jobs writing the same run directory.
@@ -96,7 +98,7 @@ For an out-of-memory exit, keep the logs and report the stage and machine RAM; d
 After direct training succeeds, the same prepared data and features can support the second model:
 
 ```bash
-python -m plan3.server --dataset "$DATASET" --work-root "$WORK" --profile full --threads 16 --start-at support --stop-after support
+uv run --locked python -m plan3.server --dataset "$DATASET" --work-root "$WORK" --profile full --threads 16 --start-at support --stop-after support
 ```
 
 It adds independently scored sibling and cross-source evidence. Its training owners come from the previously unused c_prob pool and were excluded from the direct model and learned transliteration dictionary. This pool is not also used for probability calibration. Predictions are evidence, never replacement truth labels. The runner keeps the direct model and does not automatically promote the support model. Its local feature generation completed, but its final model comparison is still pending; the direct run is the immediate handoff priority.
@@ -104,7 +106,7 @@ It adds independently scored sibling and cross-source evidence. Its training own
 ## 6. Send back the result bundle
 
 ```bash
-python -m plan3.collect --run "$WORK/runs/full-w100-m25" --out "$WORK/full-v1-results.zip"
+uv run --locked python -m plan3.collect --run "$WORK/runs/full-w100-m25" --out "$WORK/full-v1-results.zip"
 ```
 
 Send the ZIP privately to the team with the commit SHA and machine CPU/RAM. It includes model files, run metadata, metrics, candidate budget table, threshold sweeps, error ledgers and stage logs. It excludes the large raw/feature/candidate caches. It can also package an incomplete run after a failure. Use a different ZIP filename for a second collection; existing bundles are not overwritten. Error ledgers contain record IDs and some retrieved-miss text, so do not commit the bundle to the public repository. Keep the full work directory on the server for later analysis.

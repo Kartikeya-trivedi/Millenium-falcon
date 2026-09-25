@@ -14,15 +14,16 @@ The reference report records an external F0.5 score of 0.9388. That is supplied 
 
 ## Setup
 
-Python 3.12 is used by the current implementation.
+Use uv with the committed Python 3.12 pin and dependency lockfile.
 
-    python -m pip install -r plan3/requirements.txt
-    python -m pytest plan3/tests -q
+    uv python install 3.12
+    uv sync --locked
+    uv run --locked python -m pytest plan3/tests -q
 
 Place the supplied TSV data under dataset/train/ and dataset/test/. Source columns are entity_id, business_name, business_address, country. Labels use source1_entity_id, matched_entity_ids. Inputs are tab-separated, with ID lists separated by commas.
 
-    python -m plan3.server --dataset /path/to/dataset --work-root /path/to/run-storage/p3-v1 --profile full --threads 16 --check-only
-    python -m plan3.server --dataset /path/to/dataset --work-root /path/to/run-storage/p3-v1 --profile full --threads 16 --stop-after train
+    uv run --locked python -m plan3.server --dataset /path/to/dataset --work-root /path/to/run-storage/p3-v1 --profile full --threads 16 --check-only
+    uv run --locked python -m plan3.server --dataset /path/to/dataset --work-root /path/to/run-storage/p3-v1 --profile full --threads 16 --stop-after train
 
 Use Python 3.12 and the pinned dependencies. Training requires the four train TSVs only. Raw data and generated artifacts are transferred separately from Git. No GPU is required. Full-profile memory planning and resume/return commands are in the handoff guide.
 
